@@ -26,8 +26,8 @@ type GoogleEvent = {
 }
 
 /**
- * Converts a wall-clock time in a given IANA time zone to the corresponding UTC Date.
- * Accounts for the zone's DST offset on that specific date.
+ * Converts a wall-clock time in a given IANA time zone
+ * to the corresponding UTC Date.
  */
 function zonedWallTimeToUtc(
   year: number,
@@ -37,29 +37,86 @@ function zonedWallTimeToUtc(
 ): Date {
   const utcGuess = Date.UTC(year, month, day, 0, 0, 0)
   const asUtc = new Date(utcGuess)
+
   const tzString = asUtc.toLocaleString("en-US", { timeZone })
-  const offset = new Date(tzString).getTime() - new Date(asUtc.toLocaleString("en-US", { timeZone: "UTC" })).getTime()
+  const utcString = asUtc.toLocaleString("en-US", { timeZone: "UTC" })
+
+  const offset =
+    new Date(tzString).getTime() -
+    new Date(utcString).getTime()
+
   return new Date(utcGuess - offset)
 }
 
-/** Returns [start, endExclusive] UTC instants bounding the current month in the given time zone. */
-function currentMonthRange(timeZone: string): { timeMin: Date; timeMax: Date } {
+/**
+ * Returns today's start and the end of the next 28 days
+ * in the configured time zone.
+ */
+function rollingFourWeekRange(
+  timeZone: string,
+): { timeMin: Date; timeMax: Date } {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
     month: "numeric",
+    day: "numeric",
   }).formatToParts(new Date())
 
-  const year = Number(parts.find((p) => p.type === "year")?.value)
-  const month = Number(parts.find((p) => p.type === "month")?.value) - 1 // 0-indexed
+  const year = Number(
+    parts.find((p) => p.type === "year")?.value,
+  )
+  const month =
+    Number(
+      parts.find((p) => p.type === "month")?.value,
+    ) - 1
+  const day = Number(
+    parts.find((p) => p.type === "day")?.value,
+  )
 
-  const timeMin = zonedWallTimeToUtc(year, month, 1, timeZone)
-  const timeMax = zonedWallTimeToUtc(year, month + 1, 1, timeZone)
+  const timeMin = zonedWallTimeToUtc(
+    year,
+    month,
+    day,
+    timeZone,
+  )
+
+  const endDate = new Date(
+    Date.UTC(year, month, day + 29, 0, 0, 0),
+  )
+
+  const endParts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  }).formatToParts(endDate)
+
+  const endYear = Number(
+    endParts.find((p) => p.type === "year")?.value,
+  )
+  const endMonth =
+    Number(
+      endParts.find((p) => p.type === "month")?.value,
+    ) - 1
+  const endDay = Number(
+    endParts.find((p) => p.type === "day")?.value,
+  )
+
+  const timeMax = zonedWallTimeToUtc(
+    endYear,
+    endMonth,
+    endDay,
+    timeZone,
+  )
+
   return { timeMin, timeMax }
 }
 
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS })
+  return new NextResponse(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  })
 }
 
 export async function GET() {
@@ -68,16 +125,26 @@ export async function GET() {
 
   if (!calendarId || !apiKey) {
     return NextResponse.json(
-      { error: "Missing GOOGLE_CALENDAR_ID or GOOGLE_CALENDAR_API_KEY environment variable." },
-      { status: 500, headers: CORS_HEADERS },
+      {
+        error:
+          "Missing GOOGLE_CALENDAR_ID or GOOGLE_CALENDAR_API_KEY environment variable.",
+      },
+      {
+        status: 500,
+        headers: CORS_HEADERS,
+      },
     )
   }
 
-  const { timeMin, timeMax } = currentMonthRange(TIME_ZONE)
+  const { timeMin, timeMax } =
+    rollingFourWeekRange(TIME_ZONE)
 
   const url = new URL(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId,
+    )}/events`,
   )
+
   url.searchParams.set("key", apiKey)
   url.searchParams.set("timeMin", timeMin.toISOString())
   url.searchParams.set("timeMax", timeMax.toISOString())
@@ -86,21 +153,36 @@ export async function GET() {
   url.searchParams.set("timeZone", TIME_ZONE)
   url.searchParams.set("maxResults", "250")
 
-  const res = await fetch(url, { cache: "no-store" })
+  const res = await fetch(url, {
+    cache: "no-store",
+  })
 
   if (!res.ok) {
     const detail = await res.text()
+
     return NextResponse.json(
-      { error: "Failed to fetch calendar events.", status: res.status, detail },
-      { status: 502, headers: CORS_HEADERS },
+      {
+        error: "Failed to fetch calendar events.",
+        status: res.status,
+        detail,
+      },
+      {
+        status: 502,
+        headers: CORS_HEADERS,
+      },
     )
   }
 
-  const data = (await res.json()) as { items?: GoogleEvent[] }
+  const data = (await res.json()) as {
+    items?: GoogleEvent[]
+  }
+
   const items = data.items ?? []
 
   const events = items
-    .filter((event) => event.status !== "cancelled")
+    .filter(
+      (event) => event.status !== "cancelled",
+    )
     .map((event) => ({
       id: event.id,
       title: event.summary ?? "(No title)",
@@ -108,18 +190,26 @@ export async function GET() {
       location: event.location ?? null,
       link: event.htmlLink ?? null,
       allDay: Boolean(event.start?.date),
-      start: event.start?.dateTime ?? event.start?.date ?? null,
-      end: event.end?.dateTime ?? event.end?.date ?? null,
+      start:
+        event.start?.dateTime ??
+        event.start?.date ??
+        null,
+      end:
+        event.end?.dateTime ??
+        event.end?.date ??
+        null,
     }))
 
   return NextResponse.json(
     {
       timeZone: TIME_ZONE,
-      monthStart: timeMin.toISOString(),
-      monthEnd: timeMax.toISOString(),
+      rangeStart: timeMin.toISOString(),
+      rangeEnd: timeMax.toISOString(),
       count: events.length,
       events,
     },
-    { headers: CORS_HEADERS },
+    {
+      headers: CORS_HEADERS,
+    },
   )
 }
